@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Job Agent{% endblock %}</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+</head>
+<body>
+    <nav>
+        <a href="/" class="nav-brand">Job Agent</a>
+        <div class="nav-links">
+            <a href="/queue" {% if request.url.path == '/queue' %}class="active"{% endif %}>Queue</a>
+            <a href="/tracker" {% if request.url.path == '/tracker' %}class="active"{% endif %}>Tracker</a>
+        </div>
+    </nav>
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>

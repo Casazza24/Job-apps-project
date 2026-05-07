@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Application Tracker — Job Agent{% endblock %}
+{% block content %}
+<div class="page-header">
+    <h1>Application Tracker</h1>
+    <span class="badge">{{ applications | length }} total</span>
+</div>
+
+{% if not applications %}
+    <div class="empty-state">
+        <p>No submitted applications yet.</p>
+        <p class="hint">Approve applications from the <a href="/queue">Queue</a> to start tracking.</p>
+    </div>
+{% else %}
+<div class="tracker-table-wrap">
+<table class="tracker-table">
+    <thead>
+        <tr>
+            <th>Job</th>
+            <th>Company</th>
+            <th>Platform</th>
+            <th>Status</th>
+            <th>Submitted</th>
+            <th>Last Checked</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for app in applications %}
+        <tr>
+            <td><a href="{{ app.job_url }}" target="_blank">{{ app.title }}</a></td>
+            <td>{{ app.company }}</td>
+            <td><span class="platform-badge">{{ app.platform }}</span></td>
+            <td>
+                <span class="status-badge status-{{ app.status }}">
+                    {{ app.status | replace('_', ' ') | title }}
+                </span>
+            </td>
+            <td>{{ app.submitted_at.strftime('%b %d, %Y') if app.submitted_at else '—' }}</td>
+            <td>{{ app.last_checked_at.strftime('%b %d') if app.last_checked_at else '—' }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

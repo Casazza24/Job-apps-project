@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Review: {{ app.title }} @ {{ app.company }}{% endblock %}
+{% block content %}
+<div class="review-page">
+    <div class="review-header">
+        <a href="/queue" class="back-link">← Back to Queue</a>
+        <h1>{{ app.title }}</h1>
+        <div class="review-meta">
+            <span class="company">{{ app.company }}</span>
+            {% if app.location %}<span class="location">📍 {{ app.location }}</span>{% endif %}
+            {% if app.salary_range %}<span class="salary">💰 {{ app.salary_range }}</span>{% endif %}
+            <a href="{{ app.job_url }}" target="_blank" class="job-link">View Original Posting →</a>
+        </div>
+    </div>
+
+    <!-- Match Score -->
+    <div class="section score-section">
+        {% if app.match_score is not none %}
+        <div class="score-display {% if app.match_score >= 70 %}score-high{% elif app.match_score >= 50 %}score-mid{% else %}score-low{% endif %}">
+            <span class="score-number">{{ app.match_score }}</span>
+            <span class="score-label">Match Score</span>
+        </div>
+        {% endif %}
+        {% if app.score_reasoning %}
+        <p class="score-reasoning">{{ app.score_reasoning }}</p>
+        {% endif %}
+    </div>
+
+    <!-- Resume Diff -->
+    {% if app.resume_diff_parsed %}
+    <div class="section">
+        <h2>Resume Changes</h2>
+        <div class="diff-table">
+            <div class="diff-header">
+                <span>Original</span>
+                <span>Tailored</span>
+            </div>
+            {% for bullet in app.resume_diff_parsed %}
+            <div class="diff-row">
+                <div class="diff-original">{{ bullet.original }}</div>
+                <div class="diff-tailored">{{ bullet.tailored }}</div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Cover Letter + Approve/Skip form -->
+    <div class="section">
+        <h2>Cover Letter</h2>
+        <form
+            hx-post="/approve/{{ app.id }}"
+            hx-target="#action-result"
+            hx-swap="innerHTML">
+            <textarea name="cover_letter" class="cover-letter-edit" rows="12">{{ app.cover_letter_text or '' }}</textarea>
+            <div class="form-actions">
+                <button type="submit" class="btn btn-approve">✓ Approve &amp; Submit</button>
+                <button type="button"
+                    hx-post="/skip/{{ app.id }}"
+                    hx-target="#action-result"
+                    hx-swap="innerHTML"
+                    class="btn btn-skip">✗ Skip</button>
+            </div>
+        </form>
+        <div id="action-result"></div>
+    </div>
+</div>
+{% endblock %}

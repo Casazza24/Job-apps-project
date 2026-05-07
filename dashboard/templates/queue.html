@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Review Queue — Job Agent{% endblock %}
+{% block content %}
+<div class="page-header">
+    <h1>Review Queue</h1>
+    <span class="badge">{{ applications | length }} pending</span>
+</div>
+
+{% if not applications %}
+    <div class="empty-state">
+        <p>No applications pending review.</p>
+        <p class="hint">The scraper runs at 8am and 6pm daily, or <a href="/trigger/scraper" hx-post="/trigger/scraper" hx-swap="none">trigger manually</a>.</p>
+    </div>
+{% else %}
+<div class="queue-list">
+    {% for app in applications %}
+    <div class="card" id="app-{{ app.id }}">
+        <div class="card-header">
+            <div class="card-title">
+                <h3>{{ app.title }}</h3>
+                <span class="company">{{ app.company }}</span>
+                {% if app.location %}<span class="location">📍 {{ app.location }}</span>{% endif %}
+            </div>
+            <div class="card-meta">
+                {% if app.match_score is not none %}
+                <span class="score {% if app.match_score >= 70 %}score-high{% elif app.match_score >= 50 %}score-mid{% else %}score-low{% endif %}">
+                    {{ app.match_score }}%
+                </span>
+                {% endif %}
+                <span class="platform-badge">{{ app.platform }}</span>
+            </div>
+        </div>
+        <div class="card-actions">
+            <a href="/review/{{ app.id }}" class="btn btn-primary">Review</a>
+            <button
+                hx-post="/skip/{{ app.id }}"
+                hx-target="#app-{{ app.id }}"
+                hx-swap="outerHTML"
+                class="btn btn-secondary">
+                Skip
+            </button>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

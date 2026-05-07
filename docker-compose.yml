@@ -1,0 +1,49 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: jobagent
+      POSTGRES_PASSWORD: jobagent
+      POSTGRES_DB: jobagent
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      ENV: local
+      DATABASE_URL: postgresql://jobagent:jobagent@postgres/jobagent
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+    volumes:
+      - .:/app
+
+  agents:
+    build:
+      context: .
+      dockerfile: Dockerfile.agents
+    environment:
+      ENV: local
+      DATABASE_URL: postgresql://jobagent:jobagent@postgres/jobagent
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+    volumes:
+      - .:/app
+    profiles:
+      - agents  # only starts with: docker-compose --profile agents up
+
+volumes:
+  postgres_data:

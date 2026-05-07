@@ -1,0 +1,15 @@
+[Unit]
+Description=Job Agent — Scraper + Orchestrator + Submitter
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/home/ubuntu/job-agent
+ExecStart=/home/ubuntu/job-agent/venv/bin/python -m uvicorn agents.main:app --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=10
+Environment=ENV=production
+
+[Install]
+WantedBy=multi-user.target
