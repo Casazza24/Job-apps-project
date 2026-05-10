@@ -2,22 +2,25 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Merge job-agent and Job-Application-Tracker into a single GCP-hosted system with one dashboard for scanning jobs (with editable keywords), reviewing recommended jobs, tracking application status via Gmail, and viewing analytics charts.
+**Goal:** Merge job-agent and Job-Application-Tracker into a single GCP-hosted system with one dashboard for scanning jobs (with editable keywords), reviewing recommended jobs, tracking application status via Gmail, and viewing analytics charts. Job scraping uses Apify actors for reliable live data. Resume and cover letter generation incorporates real company research so every output reads like the candidate genuinely studied the company.
 
-**Architecture:** The existing FastAPI dashboard at `dashboard/main.py` becomes the single entry point. A new `agents/email_monitor/` agent replaces the Firestore JS frontend for email tracking. Search keywords move from the hardcoded `shared/keywords.py` to a `search_config` Postgres table editable at `/settings`. Everything runs on GCP Cloud Run backed by Cloud SQL (managed Postgres 15), with Cloud Scheduler triggering the scraper and email monitor daily.
+**Architecture:** The existing FastAPI dashboard at `dashboard/main.py` becomes the single entry point. A new `agents/email_monitor/` agent replaces the Firestore JS frontend for email tracking. Search keywords move from the hardcoded `shared/keywords.py` to a `search_config` Postgres table editable at `/settings`. Apify actors replace Playwright-based scrapers for job discovery. A new company researcher module crawls each company's website and recent news before the orchestrator generates tailored documents. Everything runs on GCP Cloud Run backed by Cloud SQL (managed Postgres 15), with Cloud Scheduler triggering the scraper and email monitor daily.
 
-**Tech Stack:** Python 3.12, FastAPI, Jinja2, htmx, psycopg2, Anthropic SDK (`claude-haiku-4-5-20251001`), `google-api-python-client`, `google-auth-oauthlib`, Chart.js (CDN), GCP Cloud Run, Cloud SQL (Postgres 15), Cloud Scheduler, Secret Manager, Cloud Storage.
+**Tech Stack:** Python 3.12, FastAPI, Jinja2, htmx, psycopg2, Anthropic SDK (`claude-haiku-4-5-20251001`), `apify-client`, `google-api-python-client`, `google-auth-oauthlib`, Chart.js (CDN), GCP Cloud Run, Cloud SQL (Postgres 15), Cloud Scheduler, Secret Manager, Cloud Storage.
 
 ---
 
 ## File Map
 
 **New files:**
-- `db/migrations/002_email_and_config.sql` — adds email columns to `applications`, new `gmail_tokens` table, new `search_config` table
+- `db/migrations/002_email_and_config.sql` — ✅ DONE — adds email columns to `applications`, new `gmail_tokens` table, new `search_config` table
+- `db/migrations/003_company_research.sql` — adds `company_research` table to cache per-company research
 - `agents/email_monitor/__init__.py`
 - `agents/email_monitor/gmail_client.py` — Gmail OAuth + service builder
 - `agents/email_monitor/classifier.py` — Anthropic email classifier
 - `agents/email_monitor/monitor.py` — orchestrates Gmail scan + DB updates
+- `agents/scraper/apify_scraper.py` — Apify actor client replacing Playwright scrapers
+- `agents/orchestrator/researcher.py` — crawls company website + news via Apify, returns structured research summary
 - `shared/keywords_config.py` — read/write keywords from `search_config` DB table
 - `dashboard/routers/settings.py` — `/settings` GET/POST + `/oauth/gmail` routes
 - `dashboard/routers/stats.py` — `/stats` page + `/api/stats` JSON endpoint
@@ -26,21 +29,25 @@
 - `tests/test_keywords_config.py`
 - `tests/test_classifier.py`
 - `tests/test_email_monitor.py`
+- `tests/test_apify_scraper.py`
+- `tests/test_researcher.py`
 - `tests/test_settings_routes.py`
 - `tests/test_stats_routes.py`
 
 **Modified files:**
-- `requirements.txt` — add `anthropic`, `google-auth-oauthlib`, `google-api-python-client`
-- `shared/config.py` — add `ANTHROPIC_API_KEY`, `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_USER_EMAIL`
-- `shared/db.py` — add `update_application_email_status()`, fix `get_submitted_applications()` to include `offer` status
+- `requirements.txt` — add `anthropic`, `apify-client`, `google-auth-oauthlib`, `google-api-python-client`
+- `shared/config.py` — add `ANTHROPIC_API_KEY`, `APIFY_API_TOKEN`, `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_USER_EMAIL`
+- `shared/db.py` — add `update_application_email_status()`, `get_company_research()`, `save_company_research()`; fix `get_submitted_applications()` to include `offer` status
+- `agents/scraper/scraper.py` — swap Playwright scrapers for Apify actors
+- `agents/orchestrator/orchestrator.py` — integrate researcher output into resume + cover letter prompts
 - `dashboard/main.py` — register new routers, add `/trigger/email-monitor` endpoint
 - `dashboard/templates/base.html` — add Settings and Stats nav links
 - `dashboard/templates/tracker.html` — show email-derived response subject
-- `infra/setup_gcp.sh` — add Cloud SQL, Gmail OAuth secret, email monitor scheduler
+- `infra/setup_gcp.sh` — add Cloud SQL, Apify token secret, Gmail OAuth secret, email monitor scheduler
 
 ---
 
-## Task 1: DB Migration
+## Task 1: DB Migration ✅ COMPLETE (commit 3b36763)
 
 **Files:**
 - Create: `db/migrations/002_email_and_config.sql`
@@ -149,7 +156,7 @@ google-api-python-client>=2.130.0
 - [ ] **Step 2: Install new packages**
 
 ```bash
-pip install anthropic>=0.28.0 google-auth>=2.29.0 google-auth-oauthlib>=1.2.0 google-api-python-client>=2.130.0
+pip install anthropic>=0.28.0 apify-client>=1.7.0 google-auth>=2.29.0 google-auth-oauthlib>=1.2.0 google-api-python-client>=2.130.0
 ```
 
 Expected: packages install without error.
@@ -160,6 +167,7 @@ In `shared/config.py`, add these fields inside the `Config` class (after `RESUME
 
 ```python
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
+    APIFY_API_TOKEN: str = os.getenv("APIFY_API_TOKEN", "")
     GMAIL_CLIENT_ID: str = os.getenv("GMAIL_CLIENT_ID", "")
     GMAIL_CLIENT_SECRET: str = os.getenv("GMAIL_CLIENT_SECRET", "")
     GMAIL_USER_EMAIL: str = os.getenv("GMAIL_USER_EMAIL", "")
@@ -181,7 +189,682 @@ DASHBOARD_BASE_URL=http://localhost:8000
 
 ```bash
 git add requirements.txt shared/config.py
-git commit -m "feat: add anthropic + gmail oauth dependencies and config fields"
+git commit -m "feat: add anthropic + apify + gmail oauth dependencies and config fields"
+```
+
+---
+
+## Task 2A: DB Migration — Company Research Table
+
+**Files:**
+- Create: `db/migrations/003_company_research.sql`
+
+This migration adds a `company_research` cache table so research is fetched once per company and reused across multiple job applications from the same employer.
+
+- [ ] **Step 1: Write the migration file**
+
+```sql
+-- db/migrations/003_company_research.sql
+-- Run: psql $DATABASE_URL -f db/migrations/003_company_research.sql
+
+CREATE TABLE IF NOT EXISTS company_research (
+    id              SERIAL PRIMARY KEY,
+    company_name    TEXT NOT NULL,
+    domain          TEXT,
+    mission         TEXT,
+    products        TEXT,
+    tech_stack      TEXT,
+    culture         TEXT,
+    recent_news     TEXT,
+    raw_summary     TEXT NOT NULL,
+    fetched_at      TIMESTAMP DEFAULT NOW(),
+    UNIQUE (company_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_company_research_name ON company_research(company_name);
+```
+
+- [ ] **Step 2: Verify the SQL is correct by reviewing it**
+
+Check: `UNIQUE (company_name)` ensures one row per company. All columns are nullable except `company_name` and `raw_summary` (the full text fallback). `fetched_at` lets the orchestrator skip re-fetching if research is recent (< 7 days old).
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add db/migrations/003_company_research.sql
+git commit -m "feat: add company_research cache table"
+```
+
+---
+
+## Task 2B: Apify Scraper
+
+**Files:**
+- Create: `agents/scraper/apify_scraper.py`
+- Modify: `agents/scraper/scraper.py` — call Apify instead of Playwright scrapers
+- Create: `tests/test_apify_scraper.py`
+
+Apify actors used:
+- `apify/linkedin-jobs-scraper` — LinkedIn
+- `apify/indeed-scraper` — Indeed
+- `apify/glassdoor-jobs-scraper` — Glassdoor
+- `bebity/greenhouse-jobs-scraper` — Greenhouse (ATS boards)
+
+Each actor run returns a list of job objects. This module normalises them to the same shape `insert_job()` already expects in `shared/db.py`.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_apify_scraper.py
+import pytest
+from unittest.mock import patch, MagicMock
+
+with patch("shared.db.get_pool"):
+    from agents.scraper.apify_scraper import ApifyScraper, _normalise_linkedin, _normalise_indeed
+
+
+def test_normalise_linkedin_extracts_required_fields():
+    raw = {
+        "id": "linkedin-123",
+        "title": "Data Engineer Intern",
+        "companyName": "Acme Corp",
+        "location": "San Francisco, CA",
+        "descriptionText": "We are looking for...",
+        "jobUrl": "https://linkedin.com/jobs/view/123",
+        "salary": "$80k - $100k",
+    }
+    result = _normalise_linkedin(raw)
+    assert result["external_id"] == "linkedin_linkedin-123"
+    assert result["platform"] == "linkedin"
+    assert result["title"] == "Data Engineer Intern"
+    assert result["company"] == "Acme Corp"
+    assert result["url"] == "https://linkedin.com/jobs/view/123"
+    assert result["description"] == "We are looking for..."
+    assert result["salary_range"] == "$80k - $100k"
+
+
+def test_normalise_linkedin_handles_missing_optional_fields():
+    raw = {
+        "id": "x",
+        "title": "SWE Intern",
+        "companyName": "Co",
+        "jobUrl": "https://example.com",
+    }
+    result = _normalise_linkedin(raw)
+    assert result["location"] is None
+    assert result["salary_range"] is None
+    assert result["description"] == ""
+
+
+def test_normalise_indeed_extracts_required_fields():
+    raw = {
+        "jobId": "indeed-456",
+        "positionName": "ML Intern",
+        "company": "TechCorp",
+        "location": "Remote",
+        "description": "Exciting role...",
+        "url": "https://indeed.com/viewjob?jk=456",
+        "salary": None,
+    }
+    result = _normalise_indeed(raw)
+    assert result["external_id"] == "indeed_indeed-456"
+    assert result["platform"] == "indeed"
+    assert result["title"] == "ML Intern"
+
+
+def test_apify_scraper_run_calls_actor_for_each_platform():
+    mock_client = MagicMock()
+    mock_dataset = MagicMock()
+    mock_dataset.iterate_items.return_value = []
+    mock_client.actor.return_value.call.return_value = MagicMock(default_dataset_id="ds1")
+    mock_client.dataset.return_value = mock_dataset
+
+    with patch("agents.scraper.apify_scraper.ApifyClient", return_value=mock_client), \
+         patch("agents.scraper.apify_scraper.get_config") as mock_cfg, \
+         patch("agents.scraper.apify_scraper.get_keywords", return_value=["data intern"]):
+        mock_cfg.return_value.APIFY_API_TOKEN = "test_token"
+        scraper = ApifyScraper()
+        jobs = scraper.run(platforms=["linkedin"])
+
+    mock_client.actor.assert_called_once_with("apify/linkedin-jobs-scraper")
+    assert isinstance(jobs, list)
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+```bash
+pytest tests/test_apify_scraper.py -v
+```
+
+Expected: `ModuleNotFoundError: No module named 'agents.scraper.apify_scraper'`
+
+- [ ] **Step 3: Implement agents/scraper/apify_scraper.py**
+
+```python
+# agents/scraper/apify_scraper.py
+"""
+Apify-based job scraper.
+Replaces Playwright scrapers with Apify actors for reliable live job data.
+Supported platforms: linkedin, indeed, glassdoor, greenhouse.
+"""
+from typing import Any
+from apify_client import ApifyClient
+from shared.config import get_config
+from shared.keywords_config import get_keywords
+from shared.logger import get_logger
+
+logger = get_logger("apify_scraper")
+
+_ACTORS = {
+    "linkedin": "apify/linkedin-jobs-scraper",
+    "indeed": "apify/indeed-scraper",
+    "glassdoor": "apify/glassdoor-jobs-scraper",
+    "greenhouse": "bebity/greenhouse-jobs-scraper",
+}
+
+# Max results per keyword per platform per run
+_MAX_RESULTS = 25
+
+
+def _normalise_linkedin(item: dict) -> dict:
+    return {
+        "external_id": f"linkedin_{item['id']}",
+        "platform": "linkedin",
+        "title": item.get("title", ""),
+        "company": item.get("companyName", ""),
+        "location": item.get("location"),
+        "salary_range": item.get("salary"),
+        "url": item.get("jobUrl", ""),
+        "description": item.get("descriptionText", ""),
+        "is_workday": False,
+        "workday_url": None,
+    }
+
+
+def _normalise_indeed(item: dict) -> dict:
+    return {
+        "external_id": f"indeed_{item['jobId']}",
+        "platform": "indeed",
+        "title": item.get("positionName", ""),
+        "company": item.get("company", ""),
+        "location": item.get("location"),
+        "salary_range": item.get("salary"),
+        "url": item.get("url", ""),
+        "description": item.get("description", ""),
+        "is_workday": False,
+        "workday_url": None,
+    }
+
+
+def _normalise_glassdoor(item: dict) -> dict:
+    return {
+        "external_id": f"glassdoor_{item.get('jobId', item.get('id', ''))}",
+        "platform": "glassdoor",
+        "title": item.get("jobTitle", ""),
+        "company": item.get("employerName", ""),
+        "location": item.get("location"),
+        "salary_range": item.get("salaryEstimate"),
+        "url": item.get("jobUrl", ""),
+        "description": item.get("jobDescription", ""),
+        "is_workday": False,
+        "workday_url": None,
+    }
+
+
+def _normalise_greenhouse(item: dict) -> dict:
+    return {
+        "external_id": f"greenhouse_{item.get('id', '')}",
+        "platform": "greenhouse",
+        "title": item.get("title", ""),
+        "company": item.get("company", ""),
+        "location": item.get("location", {}).get("name") if isinstance(item.get("location"), dict) else item.get("location"),
+        "salary_range": None,
+        "url": item.get("absolute_url", ""),
+        "description": item.get("content", ""),
+        "is_workday": False,
+        "workday_url": None,
+    }
+
+
+_NORMALISERS = {
+    "linkedin": _normalise_linkedin,
+    "indeed": _normalise_indeed,
+    "glassdoor": _normalise_glassdoor,
+    "greenhouse": _normalise_greenhouse,
+}
+
+
+class ApifyScraper:
+    def __init__(self):
+        config = get_config()
+        self._client = ApifyClient(config.APIFY_API_TOKEN)
+
+    def run(self, platforms: list[str] | None = None) -> list[dict]:
+        """
+        Run Apify actors for each requested platform and return normalised job dicts.
+        Defaults to all four platforms if not specified.
+        """
+        platforms = platforms or list(_ACTORS.keys())
+        keywords = get_keywords()
+        all_jobs: list[dict] = []
+
+        for platform in platforms:
+            actor_id = _ACTORS.get(platform)
+            if not actor_id:
+                logger.warning("Unknown platform", extra={"platform": platform})
+                continue
+
+            input_payload = _build_input(platform, keywords)
+
+            try:
+                logger.info("Running Apify actor", extra={"platform": platform, "actor": actor_id})
+                run = self._client.actor(actor_id).call(run_input=input_payload)
+                dataset_id = run["defaultDatasetId"]
+
+                normalise = _NORMALISERS[platform]
+                count = 0
+                for item in self._client.dataset(dataset_id).iterate_items():
+                    try:
+                        job = normalise(item)
+                        if job["title"] and job["url"]:
+                            all_jobs.append(job)
+                            count += 1
+                    except Exception as e:
+                        logger.warning("Failed to normalise item", extra={"platform": platform, "error": str(e)})
+
+                logger.info("Actor complete", extra={"platform": platform, "jobs": count})
+
+            except Exception as e:
+                logger.error("Actor run failed", extra={"platform": platform, "error": str(e)})
+
+        return all_jobs
+
+
+def _build_input(platform: str, keywords: list[str]) -> dict:
+    """Build Apify actor input payload for each platform."""
+    if platform == "linkedin":
+        return {
+            "queries": keywords[:10],
+            "maxResults": _MAX_RESULTS,
+            "proxy": {"useApifyProxy": True},
+        }
+    if platform == "indeed":
+        return {
+            "queries": [{"keyword": kw, "country": "US"} for kw in keywords[:10]],
+            "maxResults": _MAX_RESULTS,
+            "proxy": {"useApifyProxy": True},
+        }
+    if platform == "glassdoor":
+        return {
+            "queries": keywords[:10],
+            "maxResultsPerPage": _MAX_RESULTS,
+            "proxy": {"useApifyProxy": True},
+        }
+    if platform == "greenhouse":
+        return {
+            "startUrls": [{"url": "https://boards.greenhouse.io/"}],
+            "maxJobsPerBoard": _MAX_RESULTS,
+            "searchKeywords": keywords[:5],
+        }
+    return {}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+```bash
+pytest tests/test_apify_scraper.py -v
+```
+
+Expected: 4 tests PASSED.
+
+- [ ] **Step 5: Update agents/scraper/scraper.py to use ApifyScraper**
+
+Replace the body of `run_scraper()` in `agents/scraper/scraper.py`:
+
+```python
+async def run_scraper() -> None:
+    from agents.scraper.apify_scraper import ApifyScraper
+    from agents.scraper.deduplicator import Deduplicator
+
+    dedup = Deduplicator()
+    scraper = ApifyScraper()
+
+    logger.info("Starting Apify scrape")
+    jobs = scraper.run()
+    new_jobs = dedup.filter_new(jobs)
+    logger.info("Scrape complete", extra={"total": len(jobs), "new": len(new_jobs)})
+
+    total_inserted = 0
+    for job in new_jobs:
+        try:
+            inserted_id = insert_job(job)
+            if inserted_id:
+                total_inserted += 1
+        except Exception as e:
+            logger.error("Failed to insert job", extra={"error": str(e), "job": job.get("title")})
+
+    logger.info("Insertion complete", extra={"inserted": total_inserted})
+
+    try:
+        from agents.orchestrator.orchestrator import run_orchestrator
+        run_orchestrator()
+    except Exception as e:
+        logger.error("Orchestrator failed after scraping", extra={"error": str(e)})
+```
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add agents/scraper/apify_scraper.py agents/scraper/scraper.py tests/test_apify_scraper.py
+git commit -m "feat: replace playwright scrapers with apify actors for live job data"
+```
+
+---
+
+## Task 2C: Company Research Module
+
+**Files:**
+- Create: `agents/orchestrator/researcher.py`
+- Modify: `shared/db.py` — add `get_company_research()` and `save_company_research()`
+- Modify: `agents/orchestrator/orchestrator.py` — call researcher before generating resume + cover letter
+- Create: `tests/test_researcher.py`
+
+The researcher uses two Apify actors:
+1. `apify/website-content-crawler` — crawls the company's homepage and /about page to extract mission, products, values, tech stack
+2. `apify/google-search-scraper` — fetches top 3 recent news results for "[company] news 2025 2026"
+
+Results are cached in the `company_research` table for 7 days. The orchestrator passes a concise research summary to Claude when generating both the resume diff and the cover letter.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/test_researcher.py
+import pytest
+from datetime import datetime, timedelta
+from unittest.mock import patch, MagicMock
+
+with patch("shared.db.get_pool"):
+    from agents.orchestrator.researcher import (
+        fetch_company_research, _crawl_website, _fetch_news, _summarise_research
+    )
+
+
+def test_fetch_company_research_returns_cached_if_recent():
+    fresh_row = {
+        "id": 1,
+        "company_name": "Acme",
+        "raw_summary": "Acme builds widgets. Recent news: launched v2.",
+        "fetched_at": datetime.utcnow() - timedelta(days=2),
+    }
+    with patch("agents.orchestrator.researcher.get_company_research", return_value=fresh_row):
+        result = fetch_company_research("Acme", "https://acme.com")
+    assert result == fresh_row["raw_summary"]
+
+
+def test_fetch_company_research_refetches_if_stale():
+    stale_row = {
+        "id": 1,
+        "company_name": "Acme",
+        "raw_summary": "old summary",
+        "fetched_at": datetime.utcnow() - timedelta(days=10),
+    }
+    fresh_summary = "Acme Corp — mission: empower developers..."
+    with patch("agents.orchestrator.researcher.get_company_research", return_value=stale_row), \
+         patch("agents.orchestrator.researcher._crawl_website", return_value="homepage text"), \
+         patch("agents.orchestrator.researcher._fetch_news", return_value="news text"), \
+         patch("agents.orchestrator.researcher._summarise_research", return_value=fresh_summary), \
+         patch("agents.orchestrator.researcher.save_company_research") as mock_save:
+        result = fetch_company_research("Acme", "https://acme.com")
+    assert result == fresh_summary
+    mock_save.assert_called_once()
+
+
+def test_fetch_company_research_fetches_when_no_cache():
+    fresh_summary = "TechCorp — builds AI tools..."
+    with patch("agents.orchestrator.researcher.get_company_research", return_value=None), \
+         patch("agents.orchestrator.researcher._crawl_website", return_value="homepage text"), \
+         patch("agents.orchestrator.researcher._fetch_news", return_value="news text"), \
+         patch("agents.orchestrator.researcher._summarise_research", return_value=fresh_summary), \
+         patch("agents.orchestrator.researcher.save_company_research") as mock_save:
+        result = fetch_company_research("TechCorp", "https://techcorp.com")
+    assert result == fresh_summary
+    mock_save.assert_called_once_with("TechCorp", fresh_summary)
+
+
+def test_summarise_research_calls_claude_with_both_inputs():
+    mock_msg = MagicMock()
+    mock_msg.content = [MagicMock(text="Acme Corp builds developer tools. Founded 2018. Recent: Series B.")]
+    with patch("agents.orchestrator.researcher.get_config") as mock_cfg, \
+         patch("agents.orchestrator.researcher.Anthropic") as mock_anthropic:
+        mock_cfg.return_value.ANTHROPIC_API_KEY = "key"
+        mock_anthropic.return_value.messages.create.return_value = mock_msg
+        result = _summarise_research("Acme", "homepage content here", "news content here")
+    assert "Acme" in result or len(result) > 0
+    msg_call = mock_anthropic.return_value.messages.create.call_args
+    assert "homepage content here" in str(msg_call) or "news content here" in str(msg_call)
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+```bash
+pytest tests/test_researcher.py -v
+```
+
+Expected: `ModuleNotFoundError: No module named 'agents.orchestrator.researcher'`
+
+- [ ] **Step 3: Add DB helpers to shared/db.py**
+
+Add after the existing application queries section:
+
+```python
+# --- Company research cache ---
+
+def get_company_research(company_name: str) -> Optional[Dict[str, Any]]:
+    return fetchone(
+        "SELECT * FROM company_research WHERE company_name = %s",
+        (company_name,),
+    )
+
+
+def save_company_research(company_name: str, raw_summary: str) -> None:
+    execute(
+        """INSERT INTO company_research (company_name, raw_summary)
+           VALUES (%s, %s)
+           ON CONFLICT (company_name)
+           DO UPDATE SET raw_summary = EXCLUDED.raw_summary, fetched_at = NOW()""",
+        (company_name, raw_summary),
+    )
+```
+
+- [ ] **Step 4: Implement agents/orchestrator/researcher.py**
+
+```python
+# agents/orchestrator/researcher.py
+"""
+Company Research Module.
+For a given company name + website URL, crawls their homepage/about page
+and fetches recent news, then summarises into a concise research brief
+for use in resume tailoring and cover letter generation.
+
+Results are cached in company_research for 7 days to avoid repeat API calls.
+"""
+from datetime import datetime, timedelta
+from anthropic import Anthropic
+from apify_client import ApifyClient
+
+from shared.config import get_config
+from shared.db import get_company_research, save_company_research
+from shared.logger import get_logger
+
+logger = get_logger("researcher")
+
+_CACHE_DAYS = 7
+_CRAWL_ACTOR = "apify/website-content-crawler"
+_NEWS_ACTOR = "apify/google-search-scraper"
+
+
+def _crawl_website(url: str) -> str:
+    """Crawl company homepage and /about page, return concatenated plain text."""
+    config = get_config()
+    client = ApifyClient(config.APIFY_API_TOKEN)
+    urls_to_crawl = [url, url.rstrip("/") + "/about"]
+    try:
+        run = client.actor(_CRAWL_ACTOR).call(run_input={
+            "startUrls": [{"url": u} for u in urls_to_crawl],
+            "maxCrawlPages": 3,
+            "maxCrawlDepth": 1,
+            "outputFormats": ["text"],
+        })
+        texts = []
+        for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+            text = item.get("text") or item.get("markdown") or ""
+            if text:
+                texts.append(text[:3000])
+        return "\n\n".join(texts)[:8000]
+    except Exception as e:
+        logger.warning("Website crawl failed", extra={"url": url, "error": str(e)})
+        return ""
+
+
+def _fetch_news(company_name: str) -> str:
+    """Fetch top 3 recent news results for the company."""
+    config = get_config()
+    client = ApifyClient(config.APIFY_API_TOKEN)
+    query = f"{company_name} news 2025 2026"
+    try:
+        run = client.actor(_NEWS_ACTOR).call(run_input={
+            "queries": [query],
+            "maxResultsPerQuery": 3,
+            "outputFormats": ["markdown"],
+        })
+        snippets = []
+        for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+            snippet = item.get("description") or item.get("snippet") or ""
+            title = item.get("title", "")
+            if snippet:
+                snippets.append(f"{title}: {snippet}")
+        return "\n".join(snippets)
+    except Exception as e:
+        logger.warning("News fetch failed", extra={"company": company_name, "error": str(e)})
+        return ""
+
+
+def _summarise_research(company_name: str, website_text: str, news_text: str) -> str:
+    """
+    Use Claude Haiku to distil crawled content into a concise research brief.
+    The brief is designed to be injected into resume and cover letter prompts.
+    """
+    config = get_config()
+    client = Anthropic(api_key=config.ANTHROPIC_API_KEY)
+
+    user = f"""You are preparing a research brief about {company_name} for a job applicant.
+
+WEBSITE CONTENT:
+{website_text[:4000]}
+
+RECENT NEWS:
+{news_text[:2000]}
+
+Write a concise research brief (under 300 words) covering:
+1. What the company does and its core products/services
+2. Mission, values, or culture signals from the website
+3. Tech stack or engineering approach (if mentioned)
+4. Any notable recent news, launches, funding, or milestones
+5. One specific thing the applicant could reference to show genuine interest
+
+Be specific and factual. If information is missing, omit that section rather than guessing.
+Format as short paragraphs, not bullet points."""
+
+    msg = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=600,
+        messages=[{"role": "user", "content": user}],
+    )
+    return msg.content[0].text.strip()
+
+
+def fetch_company_research(company_name: str, company_url: str) -> str:
+    """
+    Return a research brief for the given company.
+    Uses cache if data is < 7 days old, otherwise fetches fresh.
+    Returns empty string on complete failure (caller should handle gracefully).
+    """
+    cached = get_company_research(company_name)
+    if cached:
+        age = datetime.utcnow() - cached["fetched_at"]
+        if age < timedelta(days=_CACHE_DAYS):
+            logger.debug("Using cached research", extra={"company": company_name})
+            return cached["raw_summary"]
+
+    logger.info("Fetching company research", extra={"company": company_name, "url": company_url})
+    website_text = _crawl_website(company_url) if company_url else ""
+    news_text = _fetch_news(company_name)
+
+    if not website_text and not news_text:
+        logger.warning("No research data found", extra={"company": company_name})
+        return ""
+
+    summary = _summarise_research(company_name, website_text, news_text)
+    save_company_research(company_name, summary)
+    return summary
+```
+
+- [ ] **Step 5: Run tests to verify they pass**
+
+```bash
+pytest tests/test_researcher.py -v
+```
+
+Expected: 4 tests PASSED.
+
+- [ ] **Step 6: Integrate research into orchestrator**
+
+In `agents/orchestrator/orchestrator.py`, find the function that calls the LLM to generate the tailored resume and cover letter (currently `call_gemini` or similar). Add a research fetch step before those calls and inject the research into the prompts.
+
+Find where the cover letter prompt is constructed and add:
+
+```python
+from agents.orchestrator.researcher import fetch_company_research
+
+# Before building prompts:
+company_name = job.get("company", "")
+job_url = job.get("url", "")
+# Derive company URL from job URL (use homepage domain)
+import re
+domain_match = re.search(r"https?://([^/]+)", job_url)
+company_domain = f"https://{domain_match.group(1)}" if domain_match else ""
+
+research_brief = fetch_company_research(company_name, company_domain)
+research_section = f"\n\nCOMPANY RESEARCH:\n{research_brief}" if research_brief else ""
+```
+
+Then in the cover letter prompt, change:
+
+```python
+# BEFORE (generic):
+f"Write a cover letter for {company_name} for the role of {job['title']}..."
+
+# AFTER (research-driven):
+f"""Write a tailored cover letter for the role of {job['title']} at {company_name}.
+
+{research_section}
+
+The letter must:
+- Open with a specific reference to something real about {company_name} (use the research above — mention a product, mission statement, recent launch, or value)
+- Connect the candidate's specific experience to what {company_name} actually does
+- Sound like the candidate genuinely researched the company, not like a template
+- Be concise: 3 short paragraphs, under 250 words
+- Close with a specific reason why this role at this company (not just any company)
+"""
+```
+
+Similarly update the resume tailoring prompt to include `research_section` for context on the company's tech stack and focus areas.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add agents/orchestrator/researcher.py agents/orchestrator/orchestrator.py shared/db.py tests/test_researcher.py
+git commit -m "feat: add company research module with apify crawl and research-driven cover letter/resume tailoring"
 ```
 
 ---
